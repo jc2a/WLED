@@ -466,7 +466,7 @@ void Segment::setGeometry(uint16_t i1, uint16_t i2, uint8_t grp, uint8_t spc, ui
   #endif
 
   m12 = constrain(m12, 0, 7);
-  if (stop && (spc > 0 || m12 != map1D2D)) fill(BLACK);
+  if (stop) fill(BLACK); // turn off LEDs in segment before changing geometry
   if (m12 != map1D2D) map1D2D = m12;
 /*
   if (boundsUnchanged
@@ -1360,9 +1360,9 @@ void WS2812FX::service() {
   bool doShow = false;
 
   _isServicing = true;
-  _segment_index = 0;
-
-  for (segment &seg : _segments) {
+  for (size_t i = 0; i < _segments.size(); i++) {
+    Segment &seg = _segments[i];
+    _segment_index = i;
     if (_suspend) break; // immediately stop processing segments if suspend requested during service()
 
     // process transition (mode changes in the middle of transition)
@@ -1416,11 +1416,11 @@ void WS2812FX::service() {
 
       seg.next_time = nowUp + frameDelay;
     }
-    _segment_index++;
   }
   _virtualSegmentLength = 0;
   _isServicing = false;
-  _triggered = false;
+  if (!_suspend) _triggered = false; // avoid losing "trigger" events if suspend requested during effect service()
+  _segment_index = 0;     // segment index is only valid while effects are serviced
 
   #ifdef WLED_DEBUG
   if ((_targetFps != FPS_UNLIMITED) && (millis() - nowUp > _frametime)) DEBUG_PRINTF_P(PSTR("Slow effects %u/%d.\n"), (unsigned)(millis()-nowUp), (int)_frametime);
@@ -1474,6 +1474,27 @@ void WS2812FX::show() {
  */
 bool WS2812FX::isUpdating() const {
   return !BusManager::canAllShow();
+}
+
+/**
+ * Be nice, but not too nice - wait until LEDs are idle, or maxWaitMS milliseconds have passed
+ * On 8266 this call will _not_ wait outside the main loop context
+ *   Function returns isUpdating() status after waiting
+ */
+bool WS2812FX::waitForLEDs(unsigned maxWaitMS) const {
+  #ifdef ARDUINO_ARCH_ESP32
+    unsigned long waitStart = millis();
+    while (strip.isUpdating() && (millis() - waitStart < maxWaitMS)) delay(1);
+  #else
+    if (can_yield()) {
+      // If we are in a yieldable context (main loop), wait until the LEDs output finishes
+      yield();
+      unsigned long waitStart = millis();
+      while (strip.isUpdating() && (millis() - waitStart < maxWaitMS)) delay(1);
+      yield();
+    }
+  #endif
+  return isUpdating();
 }
 
 /**
